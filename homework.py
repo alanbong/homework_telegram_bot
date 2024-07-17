@@ -111,7 +111,7 @@ def parse_status(homework):
 
     homework_name = homework['homework_name']
     status = homework['status']
-    
+
     if status not in HOMEWORK_VERDICTS:
         raise ValueError(f'Неизвестный статус домашней работы: {status}')
 
