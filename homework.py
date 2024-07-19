@@ -127,7 +127,9 @@ def parse_status(homework):
     status = homework['status']
 
     if status not in HOMEWORK_VERDICTS:
-        raise HomeworkStatusError(f'Неизвестный статус домашней работы: {status}')
+        raise HomeworkStatusError(
+            f'Неизвестный статус домашней работы: {status}'
+        )
 
     verdict = HOMEWORK_VERDICTS[status]
 
@@ -188,5 +190,4 @@ if __name__ == '__main__':
         handlers=[logging.StreamHandler(sys.stdout)]
     )
 
-    
     main()
