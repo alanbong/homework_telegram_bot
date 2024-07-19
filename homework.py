@@ -1,12 +1,15 @@
-from http import HTTPStatus
-import time
-import os
-import requests
 import logging
+import os
 import sys
+import time
+from http import HTTPStatus
 
+import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
+from telebot.apihelper import ApiException
+
+from exceptions import APIResponseError, HomeworkStatusError
 
 load_dotenv()
 
@@ -25,81 +28,92 @@ HOMEWORK_VERDICTS = {
 }
 
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
 logger = logging.getLogger(__name__)
 
 
 def check_tokens():
     """Проверка доступности переменных окружения."""
-    tokens = [PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]
-    return all(tokens)
+    tokens = ("PRACTICUM_TOKEN", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID")
+    missing_tokens = []
+
+    for token in tokens:
+        if not globals().get(token):
+            missing_tokens.append(token)
+
+    if missing_tokens:
+        missing_tokens = ", ".join(missing_tokens)
+        error_message = (f"Отсутствуют обязательные переменные окружения: "
+                         f"{missing_tokens}")
+        logging.critical(error_message)
+        sys.exit(1)
 
 
 def send_message(bot, message):
     """Отправка сообщения в Telegram чат."""
     try:
+        logger.debug(f'Начало отправки сообщения: {message}')
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(f'Сообщение успешно отправлено: {message}')
-    except Exception as error:
+    except (ApiException, requests.RequestException) as error:
         logger.error(f'Сбой при отправке сообщения в Telegram: {error}')
 
 
 def get_api_answer(timestamp):
     """Запрос к API."""
     params = {'from_date': timestamp}
+    logger.debug(f"Отправка запроса к API: {ENDPOINT}. Параметры: {params}")
+
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-        if response.status_code != HTTPStatus.OK:
-            raise Exception(f'Эндпоинт {ENDPOINT} недоступен. '
-                            f'Код ответа API: {response.status_code}')
-        return response.json()
     except requests.RequestException as error:
-        logger.error(f'Ошибка при запросе к API: {error}')
-        return None
-        # это костыль, чтобы пройти тест
-        # tests/test_bot.py::TestHomework::test_get_api_answer_with_request_exception
-        # я не совсем понял как это решить
-    except Exception as error:
-        logger.error(f'Сбой при запросе к эндпоинту: {error}')
-        raise
+        raise ConnectionError(f'Ошибка при запросе к API: {error}')
+
+    if response.status_code != HTTPStatus.OK:
+        error_message = (
+            f'Эндпоинт {ENDPOINT} недоступен. '
+            f'Код ответа API: {response.status_code}. '
+            f'Причина: {response.reason}'
+        )
+        raise APIResponseError(error_message)
+
+    logger.debug(f"Успешный ответ от API: {ENDPOINT}")
+
+    return response.json()
 
 
 def check_response(response):
     """Проверка ответа API."""
-    try:
-        if not isinstance(response, dict):
-            raise TypeError('Ответ API не является словарем')
+    if not isinstance(response, dict):
+        raise TypeError(
+            'Ответ API не является словарем. '
+            f'Получен {type(response)}'
+        )
 
-        required_keys = ['homeworks', 'current_date']
-        for key in required_keys:
-            if key not in response:
-                raise KeyError(f'В товете API отсутсвует ключ "{key}"')
+    required_keys = ['homeworks', 'current_date']
+    for key in required_keys:
+        if key not in response:
+            raise KeyError(f'В товете API отсутсвует ключ "{key}"')
 
-        homeworks = response['homeworks']
-        if not isinstance(homeworks, list):
-            raise TypeError(
-                'Значение ключа "homeworks" ответа API не является списком'
-            )
+    homeworks = response['homeworks']
+    if not isinstance(homeworks, list):
+        raise TypeError(
+            'Значение ключа "homeworks" ответа API не является списком. '
+            f'Получен {type(response)}'
+        )
 
-        if homeworks:
-            homework = homeworks[0]
-            if not isinstance(homework, dict):
-                raise TypeError('Домашняя работа не является словарем')
-            return homework
-        logger.debug('Список домашних работ пуск')
-        return None
-    except Exception as error:
-        logger.error(f'Ошибка при проверке ответа API: {error}')
-        raise
+    if homeworks and not isinstance(homeworks[0], dict):
+        raise TypeError(
+            'Домашняя работа не является словарем. '
+            f'Получен {type(homeworks[0])}'
+        )
+
+    return homeworks
 
 
 def parse_status(homework):
     """Извлечение статуса домашней работы."""
+    logger.debug('Начало проверки статуса домашней работы.')
+
     if 'homework_name' not in homework:
         raise KeyError(
             'В ответе API домашней работы отсутствует ключ "homework_name"'
@@ -113,38 +127,38 @@ def parse_status(homework):
     status = homework['status']
 
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(f'Неизвестный статус домашней работы: {status}')
+        raise HomeworkStatusError(f'Неизвестный статус домашней работы: {status}')
 
     verdict = HOMEWORK_VERDICTS[status]
+
+    logger.debug('Проверка статуса домашней работы завершена успешно.')
+
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        logger.critical('Отсутствуют обязательные переменные окружения')
-        return
+    check_tokens()
 
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = 0
-    last_status = None
     last_error = None
 
     while True:
         try:
             response = get_api_answer(timestamp)
-            homework = check_response(response)
+            homeworks = check_response(response)
 
-            if homework:
-                current_status = homework['status']
-                if current_status != last_status:
-                    message = parse_status(homework)
-                    send_message(bot, message)
-                    last_status = current_status
-                    logger.info(f'Статус изменился на: {current_status}')
+            if homeworks:
+                homework = homeworks[0]
+                message = parse_status(homework)
+                send_message(bot, message)
+                logger.info(f'Статус изменился на: {message}')
+                last_error = None
+            else:
+                logger.debug('Отсутствие новых статусов')
 
-            timestamp = response['current_date']
-            last_error = None
+            timestamp = response.get('current_date', int(time.time()))
 
         except Exception as error:
             error_message = f'Сбой в работе программы: {error}'
@@ -153,8 +167,26 @@ def main():
                 send_message(bot, error_message)
                 last_error = error_message
 
-        time.sleep(RETRY_PERIOD)
+            logger.error(error_message, exc_info=True)
+
+        finally:
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        format=(
+            '%(asctime)s - '
+            '%(name)s - '
+            '%(levelname)s - '
+            '%(filename)s:'
+            '%(funcName)s:'
+            '%(lineno)d - '
+            '%(message)s'
+        ),
+        level=logging.DEBUG,
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
+    
     main()
