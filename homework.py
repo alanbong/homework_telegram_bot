@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.apihelper import ApiException
 
-from exceptions import APIResponseError, HomeworkStatusError
+from exceptions import APIResponseError, HomeworkStatusError, MissingTokensError
 
 load_dotenv()
 
@@ -42,10 +42,10 @@ def check_tokens():
 
     if missing_tokens:
         missing_tokens = ", ".join(missing_tokens)
-        error_message = (f"Отсутствуют обязательные переменные окружения: "
+        error_message = ("Отсутствуют обязательные переменные окружения: "
                          f"{missing_tokens}")
         logging.critical(error_message)
-        sys.exit(1)
+        raise MissingTokensError(error_message)
 
 
 def send_message(bot, message):
@@ -66,15 +66,17 @@ def get_api_answer(timestamp):
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
     except requests.RequestException as error:
-        raise ConnectionError(f'Ошибка при запросе к API: {error}')
+        raise ConnectionError(
+            f"Ошибка при запросе к API: {error} "
+            f"Эндпоинт: {ENDPOINT}, Параметры: {params}"
+        )
 
     if response.status_code != HTTPStatus.OK:
-        error_message = (
+        raise APIResponseError(
             f'Эндпоинт {ENDPOINT} недоступен. '
             f'Код ответа API: {response.status_code}. '
             f'Причина: {response.reason}'
         )
-        raise APIResponseError(error_message)
 
     logger.debug(f"Успешный ответ от API: {ENDPOINT}")
 
@@ -89,22 +91,14 @@ def check_response(response):
             f'Получен {type(response)}'
         )
 
-    required_keys = ['homeworks', 'current_date']
-    for key in required_keys:
-        if key not in response:
-            raise KeyError(f'В товете API отсутсвует ключ "{key}"')
+    if 'homeworks' not in response:
+        raise KeyError('В товете API отсутсвует ключ "homeworks"')
 
     homeworks = response['homeworks']
     if not isinstance(homeworks, list):
         raise TypeError(
             'Значение ключа "homeworks" ответа API не является списком. '
-            f'Получен {type(response)}'
-        )
-
-    if homeworks and not isinstance(homeworks[0], dict):
-        raise TypeError(
-            'Домашняя работа не является словарем. '
-            f'Получен {type(homeworks[0])}'
+            f'Получен {type(homeworks)}'
         )
 
     return homeworks
