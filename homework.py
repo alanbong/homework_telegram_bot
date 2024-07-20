@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.apihelper import ApiException
 
-from exceptions import APIResponseError, HomeworkStatusError, MissingTokensError
+from exceptions import (
+    APIResponseError, HomeworkStatusError, MissingTokensError
+)
 
 load_dotenv()
 
